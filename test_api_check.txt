@@ -1,0 +1,1 @@
+test skin upload api
