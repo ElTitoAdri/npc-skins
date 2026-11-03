@@ -36,22 +36,31 @@ public class NPCSkinsMod {
         } catch (Throwable t) {
             System.err.println("[NPCSkins] Error al registrar KeyBinding: " + t.getMessage());
         }
+
+        try {
+            // Register GuiQueue for frame-safe GUI opening
+            FMLCommonHandler.instance().bus().register(new GuiQueue());
+        } catch (Throwable t) {
+            System.err.println("[NPCSkins] Error al registrar GuiQueue: " + t.getMessage());
+        }
     }
 
     @Mod.EventHandler
     public void postInit(FMLPostInitializationEvent event) {
-        System.out.println("[NPCSkins] Iniciando sincronización de skins con GitHub (ElTitoAdri/npc-skins)...");
-        SkinSyncManager.syncAsync(new Runnable() {
-            @Override
-            public void run() {
-                System.out.println("[NPCSkins] " + SkinSyncManager.getLastStatus());
-            }
-        });
+        if (event.getSide() == Side.CLIENT) {
+            System.out.println("[NPCSkins] Iniciando sincronización de skins con GitHub (ElTitoAdri/npc-skins)...");
+            SkinSyncManager.syncAsync(new Runnable() {
+                @Override
+                public void run() {
+                    System.out.println("[NPCSkins] " + SkinSyncManager.getLastStatus());
+                }
+            });
+        }
     }
 
     @Mod.EventHandler
     public void serverStarting(FMLServerStartingEvent event) {
-        // Also register /skins command on server side if run on a dedicated server
+        // Safe server-side command handler
         try {
             event.registerServerCommand(new CommandSkins());
         } catch (Throwable ignored) {}

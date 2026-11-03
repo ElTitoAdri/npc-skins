@@ -15,8 +15,8 @@ public class KeyInputHandler {
     public void onKeyInput(InputEvent.KeyInputEvent event) {
         if (keyOpenSkins != null && keyOpenSkins.f()) { // isPressed
             bao mc = bao.B();
-            if (mc != null && mc.m == null) { // only if no other GUI is currently open
-                mc.a(new GuiSkinSearch());
+            if (mc != null && (mc.n == null || mc.n instanceof GuiSkinSearch)) {
+                GuiQueue.open(new GuiSkinSearch());
             }
         }
     }

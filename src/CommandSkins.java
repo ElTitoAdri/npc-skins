@@ -28,9 +28,9 @@ public class CommandSkins implements aa {
     @Override
     public void b(final ac sender, String[] args) { // processCommand
         if (args.length == 0) {
-            // Open GUI on client
+            // Open GUI on client via GuiQueue so GuiChat closing doesn't overwrite it!
             try {
-                bao.B().a(new GuiSkinSearch());
+                GuiQueue.open(new GuiSkinSearch());
             } catch (Throwable t) {
                 sender.a(new fq("§cError al abrir el buscador de skins: " + t.getMessage()));
             }
