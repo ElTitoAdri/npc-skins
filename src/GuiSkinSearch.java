@@ -1,10 +1,10 @@
 import java.awt.Desktop;
-import java.awt.FileDialog;
-import java.awt.Frame;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.io.File;
 import java.util.*;
+import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 public class GuiSkinSearch extends bdw {
     private bcd searchBox;
@@ -22,6 +22,9 @@ public class GuiSkinSearch extends bdw {
     public void b() { // initGui
         this.n.clear();
 
+        // Always reload local files and invalidate Custom NPCs cache when opening GUI
+        SkinSyncManager.reloadLocalSkins();
+
         int boxW = 260;
         int boxX = (this.l - boxW) / 2;
         this.searchBox = new bcd(this.q, boxX, 35, boxW, 20);
@@ -33,7 +36,7 @@ public class GuiSkinSearch extends bdw {
         int btnRow2Y = this.m - 26;
 
         // Row 1: 3 buttons (Width: 84 each)
-        this.n.add(new bcb(1, leftX, btnRow1Y, 84, 20, "§aCopiar"));
+        this.n.add(new bcb(1, leftX, btnRow1Y, 84, 20, "§aCopiar Ruta"));
         this.n.add(new bcb(5, leftX + 88, btnRow1Y, 84, 20, "§2⬆ Subir"));
         this.n.add(new bcb(2, leftX + 176, btnRow1Y, 84, 20, "§eSincronizar"));
 
@@ -81,11 +84,11 @@ public class GuiSkinSearch extends bdw {
         this.c(); // drawDefaultBackground
 
         // Title and header
-        String title = "§6§lBuscador y Subidor de Skins de NPC";
+        String title = "§6§lBuscador y Gestor de Skins de NPC";
         this.q.a(title, (this.l - this.q.a(title)) / 2, 8, 0xFFFFFF);
 
-        String subtitle = "§7Repositorio: §f" + SkinSyncManager.GITHUB_OWNER + "/" + SkinSyncManager.GITHUB_REPO +
-                          " §7| Total: §a" + SkinSyncManager.getAvailableSkins().size();
+        String subtitle = "§7Repo: §f" + SkinSyncManager.GITHUB_OWNER + "/" + SkinSyncManager.GITHUB_REPO +
+                          " §7| Total skins: §a" + SkinSyncManager.getAvailableSkins().size();
         this.q.a(subtitle, (this.l - this.q.a(subtitle)) / 2, 22, 0xAAAAAA);
 
         // Draw Search Box
@@ -93,7 +96,7 @@ public class GuiSkinSearch extends bdw {
 
         // Draw Skins List Box
         int listX = (this.l - 260) / 2;
-        int listY = 62;
+        int listY = 60;
         int listW = 260;
         int listH = ITEMS_PER_PAGE * ITEM_HEIGHT + 2;
 
@@ -126,7 +129,7 @@ public class GuiSkinSearch extends bdw {
             }
         }
 
-        // Draw status messages (priority: globalStatus from background thread > localStatusText)
+        // Draw hint or status messages (priority: globalStatus > localStatusText > syncing status > hint)
         String globalMsg = SkinSyncManager.getGlobalStatus();
         if (!globalMsg.isEmpty()) {
             this.q.a(globalMsg, (this.l - this.q.a(globalMsg)) / 2, this.m - 64, 0xFFFFFF);
@@ -135,6 +138,9 @@ public class GuiSkinSearch extends bdw {
         } else if (SkinSyncManager.isSyncing()) {
             String syncStr = "§e" + SkinSyncManager.getLastStatus();
             this.q.a(syncStr, (this.l - this.q.a(syncStr)) / 2, this.m - 64, 0xFFFF55);
+        } else {
+            String hint = "§8Elige una skin y pulsa Copiar Ruta para pegarla en tu NPC";
+            this.q.a(hint, (this.l - this.q.a(hint)) / 2, this.m - 64, 0x888888);
         }
 
         super.a(mouseX, mouseY, partialTicks);
@@ -142,12 +148,12 @@ public class GuiSkinSearch extends bdw {
 
     @Override
     protected void a(bcb button) { // actionPerformed
-        if (button.k == 1) { // Copiar
+        if (button.k == 1) { // Copiar Ruta
             copySelectedSkin();
         } else if (button.k == 5) { // Subir Skin
             openSkinUploadDialog();
         } else if (button.k == 2) { // Sincronizar
-            SkinSyncManager.setGlobalStatus("§eConectando con GitHub...", 8000);
+            SkinSyncManager.setGlobalStatus("§eConectando y sincronizando con GitHub...", 8000);
             SkinSyncManager.syncAsync(new Runnable() {
                 @Override
                 public void run() {
@@ -158,6 +164,8 @@ public class GuiSkinSearch extends bdw {
             try {
                 File dir = SkinSyncManager.getCustomNpcsDir();
                 Desktop.getDesktop().open(dir);
+                localStatusText = "§aCarpeta abierta. Puedes arrastrar tus .png ahí y pulsar Sincronizar.";
+                localStatusClearTime = System.currentTimeMillis() + 6000;
             } catch (Exception e) {
                 try {
                     Desktop.getDesktop().open(SkinSyncManager.getSkinsDir());
@@ -169,50 +177,72 @@ public class GuiSkinSearch extends bdw {
     }
 
     private void openSkinUploadDialog() {
-        SkinSyncManager.setGlobalStatus("§eAbriendo explorador de archivos...", 5000);
+        SkinSyncManager.setGlobalStatus("§eAbriendo selector de archivos...", 6000);
 
-        new Thread(new Runnable() {
+        SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
                 try {
-                    FileDialog dialog = new FileDialog((Frame) null, "Selecciona una Skin de Minecraft (64x64 o 64x32)", FileDialog.LOAD);
-                    dialog.setFile("*.png");
-                    dialog.setAlwaysOnTop(true);
-                    dialog.setVisible(true);
+                    try {
+                        UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+                    } catch (Throwable ignored) {}
 
-                    String file = dialog.getFile();
-                    String dir = dialog.getDirectory();
-                    dialog.dispose();
+                    // Topmost dummy frame ensures dialog appears in front of Minecraft
+                    JFrame dummy = new JFrame();
+                    dummy.setUndecorated(true);
+                    dummy.setSize(0, 0);
+                    dummy.setLocationRelativeTo(null);
+                    dummy.setAlwaysOnTop(true);
+                    dummy.setVisible(true);
+                    dummy.toFront();
+                    dummy.requestFocus();
 
-                    if (file != null && dir != null) {
-                        File chosen = new File(dir, file);
-                        SkinSyncManager.uploadSkinAsync(chosen, new Runnable() {
-                            @Override
-                            public void run() {
-                                updateFilter();
-                            }
-                        });
+                    JFileChooser chooser = new JFileChooser();
+                    chooser.setDialogTitle("Selecciona una skin de Minecraft (.png 64x64)");
+                    chooser.setFileFilter(new FileNameExtensionFilter("Skins de Minecraft (*.png)", "png"));
+                    chooser.setAcceptAllFileFilterUsed(false);
+
+                    File desktop = new File(System.getProperty("user.home"), "Desktop");
+                    if (desktop.exists()) {
+                        chooser.setCurrentDirectory(desktop);
+                    }
+
+                    int res = chooser.showOpenDialog(dummy);
+                    dummy.dispose();
+
+                    if (res == JFileChooser.APPROVE_OPTION) {
+                        final File chosen = chooser.getSelectedFile();
+                        if (chosen != null) {
+                            SkinSyncManager.uploadSkinAsync(chosen, new Runnable() {
+                                @Override
+                                public void run() {
+                                    updateFilter();
+                                }
+                            });
+                        }
                     } else {
                         SkinSyncManager.setGlobalStatus("§7Subida cancelada.", 3000);
                     }
                 } catch (Throwable t) {
-                    SkinSyncManager.setGlobalStatus("§cError al abrir ventana: " + t.getMessage(), 4000);
+                    SkinSyncManager.setGlobalStatus("§cError al abrir ventana: " + t.getMessage(), 5000);
                 }
             }
-        }, "NPCSkins-FileDialog-Thread").start();
+        });
     }
 
     private void copySelectedSkin() {
         if (selectedIdx >= 0 && selectedIdx < filteredList.size()) {
             String skin = filteredList.get(selectedIdx);
-            if (skin.endsWith(".png")) {
-                skin = skin.substring(0, skin.length() - 4);
+            if (!skin.toLowerCase().endsWith(".png")) {
+                skin = skin + ".png";
             }
+            // The exact format needed by Custom NPCs:
+            String texturePath = "customnpcs:textures/entity/" + skin;
             try {
-                StringSelection selection = new StringSelection(skin);
+                StringSelection selection = new StringSelection(texturePath);
                 Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, selection);
-                localStatusText = "§a¡Copiado al portapapeles: §f" + skin + "§a! (Pega con Ctrl+V en Custom NPCs)";
-                localStatusClearTime = System.currentTimeMillis() + 4000;
+                localStatusText = "§a¡Ruta copiada! Pégala con Ctrl+V en Display -> Texture del NPC";
+                localStatusClearTime = System.currentTimeMillis() + 5000;
             } catch (Exception e) {
                 localStatusText = "§cError al copiar";
                 localStatusClearTime = System.currentTimeMillis() + 3000;
@@ -268,7 +298,7 @@ public class GuiSkinSearch extends bdw {
         this.searchBox.a(mouseX, mouseY, mouseButton);
 
         int listX = (this.l - 260) / 2;
-        int listY = 62;
+        int listY = 60;
         int listW = 260;
 
         if (mouseX >= listX && mouseX <= listX + listW) {

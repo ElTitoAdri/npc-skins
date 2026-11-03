@@ -1,5 +1,6 @@
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.lang.reflect.Field;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -72,9 +73,7 @@ public class SkinSyncManager {
     }
 
     public static List<String> getAvailableSkins() {
-        if (availableSkins.isEmpty()) {
-            reloadLocalSkins();
-        }
+        reloadLocalSkins();
         return Collections.unmodifiableList(availableSkins);
     }
 
@@ -98,32 +97,59 @@ public class SkinSyncManager {
         globalStatusUntil = System.currentTimeMillis() + displayMs;
     }
 
+    public static void invalidateCustomNpcsCache() {
+        try {
+            Class<?> clazz = Class.forName("noppes.npcs.client.gui.select.GuiTextureSelection");
+            Field fDomains = clazz.getDeclaredField("cachedDomains");
+            fDomains.setAccessible(true);
+            fDomains.set(null, null);
+
+            Field fTime = clazz.getDeclaredField("lastCacheTime");
+            fTime.setAccessible(true);
+            fTime.setLong(null, 0L);
+
+            Field fTextures = clazz.getDeclaredField("cachedTextures");
+            fTextures.setAccessible(true);
+            fTextures.set(null, null);
+        } catch (Throwable ignored) {}
+    }
+
     public static void reloadLocalSkins() {
         Set<String> set = new TreeSet<String>(String.CASE_INSENSITIVE_ORDER);
         File dir1 = getCustomNpcsDir();
+        File dir2 = getSkinsDir();
+
         if (dir1.exists()) {
             File[] files = dir1.listFiles();
             if (files != null) {
                 for (File f : files) {
                     if (f.isFile() && f.getName().toLowerCase().endsWith(".png")) {
                         set.add(f.getName());
+                        File f2 = new File(dir2, f.getName());
+                        if (!f2.exists()) {
+                            copyFile(f, f2);
+                        }
                     }
                 }
             }
         }
-        File dir2 = getSkinsDir();
         if (dir2.exists()) {
             File[] files = dir2.listFiles();
             if (files != null) {
                 for (File f : files) {
                     if (f.isFile() && f.getName().toLowerCase().endsWith(".png")) {
                         set.add(f.getName());
+                        File f1 = new File(dir1, f.getName());
+                        if (!f1.exists()) {
+                            copyFile(f, f1);
+                        }
                     }
                 }
             }
         }
         availableSkins.clear();
         availableSkins.addAll(set);
+        invalidateCustomNpcsCache();
     }
 
     public static void syncAsync(final Runnable onComplete) {
@@ -135,6 +161,7 @@ public class SkinSyncManager {
             @Override
             public void run() {
                 int downloaded = 0;
+                int uploaded = 0;
                 try {
                     URL url = new URL(API_URL);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -154,9 +181,15 @@ public class SkinSyncManager {
                         reader.close();
 
                         List<SkinFileInfo> list = parseGithubContents(sb.toString());
+                        Set<String> githubNames = new HashSet<String>();
+                        for (SkinFileInfo info : list) {
+                            githubNames.add(info.name.toLowerCase());
+                        }
+
                         File target1 = getCustomNpcsDir();
                         File target2 = getSkinsDir();
 
+                        // 1. Download skins from GitHub that are missing locally
                         for (SkinFileInfo info : list) {
                             if (info.name.toLowerCase().endsWith(".png")) {
                                 File file1 = new File(target1, info.name);
@@ -169,9 +202,31 @@ public class SkinSyncManager {
                                 }
                             }
                         }
+
+                        // 2. Also auto-upload valid local skins that aren't on GitHub yet
+                        if (target1.exists()) {
+                            File[] localFiles = target1.listFiles();
+                            if (localFiles != null) {
+                                for (File f : localFiles) {
+                                    if (f.isFile() && f.getName().toLowerCase().endsWith(".png")) {
+                                        if (!githubNames.contains(f.getName().toLowerCase())) {
+                                            if (validateSkinFile(f) == null) {
+                                                boolean ok = uploadSkinSync(f);
+                                                if (ok) uploaded++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         reloadLocalSkins();
-                        lastStatus = "Sincronizado: " + availableSkins.size() + " skins (" + downloaded + " nuevas)";
-                        setGlobalStatus("§a" + lastStatus, 5000);
+                        String extra = "";
+                        if (downloaded > 0 || uploaded > 0) {
+                            extra = " (+" + downloaded + " descargadas, " + uploaded + " subidas)";
+                        }
+                        lastStatus = "Sincronizado: " + availableSkins.size() + " skins" + extra;
+                        setGlobalStatus("§a" + lastStatus, 6000);
                     } else {
                         lastStatus = "GitHub error: HTTP " + code;
                         reloadLocalSkins();
@@ -220,12 +275,78 @@ public class SkinSyncManager {
             // 128x128 (HD skins)
             boolean isValidDimension = (w == 64 && (h == 32 || h == 64)) || (w == 128 && h == 128);
             if (!isValidDimension) {
-                return "Dimensiones inválidas (" + w + "x" + h + " px). Una skin debe medir 64x64 o 64x32 píxeles.";
+                return "Dimensiones inválidas (" + w + "x" + h + " px). Debe medir 64x64 o 64x32 píxeles.";
             }
         } catch (Exception e) {
             return "Error al verificar la imagen: " + e.getMessage();
         }
-        return null; // Valid!
+        return null;
+    }
+
+    public static boolean uploadSkinSync(File file) {
+        try {
+            String error = validateSkinFile(file);
+            if (error != null) return false;
+
+            String token = getAuthToken();
+            if (token == null || token.isEmpty()) return false;
+
+            String rawName = file.getName();
+            if (rawName.toLowerCase().endsWith(".png")) {
+                rawName = rawName.substring(0, rawName.length() - 4);
+            }
+            String cleanName = rawName.trim().toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+            if (cleanName.isEmpty()) {
+                cleanName = "skin_" + (System.currentTimeMillis() % 100000);
+            }
+            String finalFileName = cleanName + ".png";
+
+            byte[] bytes = new byte[(int) file.length()];
+            FileInputStream fis = new FileInputStream(file);
+            int totalRead = 0;
+            while (totalRead < bytes.length) {
+                int r = fis.read(bytes, totalRead, bytes.length - totalRead);
+                if (r == -1) break;
+                totalRead += r;
+            }
+            fis.close();
+
+            String base64Content = Base64.getEncoder().encodeToString(bytes);
+            String sha = getFileSha(finalFileName);
+
+            String jsonPayload;
+            if (sha != null && !sha.isEmpty()) {
+                jsonPayload = "{\"message\":\"Actualizar skin " + cleanName + "\",\"content\":\"" + base64Content + "\",\"sha\":\"" + sha + "\"}";
+            } else {
+                jsonPayload = "{\"message\":\"Subir skin " + cleanName + "\",\"content\":\"" + base64Content + "\"}";
+            }
+
+            URL url = new URL(API_URL + "/" + finalFileName);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("PUT");
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            conn.setRequestProperty("User-Agent", "NPCSkinsMod-Minecraft-1.7.10");
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
+
+            OutputStream os = conn.getOutputStream();
+            os.write(jsonPayload.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            if (code == 200 || code == 201) {
+                File local1 = new File(getCustomNpcsDir(), finalFileName);
+                File local2 = new File(getSkinsDir(), finalFileName);
+                if (!file.equals(local1)) copyFile(file, local1);
+                if (!file.equals(local2)) copyFile(file, local2);
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     public static void uploadSkinAsync(final File file, final Runnable onDone) {
@@ -253,60 +374,15 @@ public class SkinSyncManager {
                     if (cleanName.isEmpty()) {
                         cleanName = "skin_" + (System.currentTimeMillis() % 100000);
                     }
-                    String finalFileName = cleanName + ".png";
 
                     setGlobalStatus("§eSubiendo '" + cleanName + "' a GitHub...", 10000);
 
-                    // Read file bytes
-                    byte[] bytes = new byte[(int) file.length()];
-                    FileInputStream fis = new FileInputStream(file);
-                    int totalRead = 0;
-                    while (totalRead < bytes.length) {
-                        int r = fis.read(bytes, totalRead, bytes.length - totalRead);
-                        if (r == -1) break;
-                        totalRead += r;
-                    }
-                    fis.close();
-
-                    String base64Content = Base64.getEncoder().encodeToString(bytes);
-
-                    // Check if file already exists in GitHub to retrieve SHA
-                    String sha = getFileSha(finalFileName);
-
-                    String jsonPayload;
-                    if (sha != null && !sha.isEmpty()) {
-                        jsonPayload = "{\"message\":\"Actualizar skin " + cleanName + "\",\"content\":\"" + base64Content + "\",\"sha\":\"" + sha + "\"}";
-                    } else {
-                        jsonPayload = "{\"message\":\"Subir skin " + cleanName + "\",\"content\":\"" + base64Content + "\"}";
-                    }
-
-                    URL url = new URL(API_URL + "/" + finalFileName);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("PUT");
-                    conn.setRequestProperty("Authorization", "Bearer " + token);
-                    conn.setRequestProperty("User-Agent", "NPCSkinsMod-Minecraft-1.7.10");
-                    conn.setRequestProperty("Accept", "application/vnd.github+json");
-                    conn.setRequestProperty("Content-Type", "application/json");
-                    conn.setDoOutput(true);
-                    conn.setConnectTimeout(10000);
-                    conn.setReadTimeout(15000);
-
-                    OutputStream os = conn.getOutputStream();
-                    os.write(jsonPayload.getBytes("UTF-8"));
-                    os.flush();
-                    os.close();
-
-                    int code = conn.getResponseCode();
-                    if (code == 200 || code == 201) {
-                        // Save locally
-                        File local1 = new File(getCustomNpcsDir(), finalFileName);
-                        File local2 = new File(getSkinsDir(), finalFileName);
-                        copyFile(file, local1);
-                        copyFile(file, local2);
+                    boolean ok = uploadSkinSync(file);
+                    if (ok) {
                         reloadLocalSkins();
                         setGlobalStatus("§a¡Skin '" + cleanName + "' subida con éxito a GitHub!", 6000);
                     } else {
-                        setGlobalStatus("§cError al subir a GitHub (HTTP " + code + ")", 5000);
+                        setGlobalStatus("§cError al subir a GitHub. Revisa la consola o conexión.", 6000);
                     }
                 } catch (Exception e) {
                     setGlobalStatus("§cError: " + e.getMessage(), 6000);
@@ -350,6 +426,7 @@ public class SkinSyncManager {
 
     private static void copyFile(File src, File dest) {
         try {
+            if (src.getCanonicalPath().equals(dest.getCanonicalPath())) return;
             FileInputStream in = new FileInputStream(src);
             FileOutputStream out = new FileOutputStream(dest);
             byte[] buf = new byte[4096];
