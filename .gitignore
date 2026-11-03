@@ -1,0 +1,7 @@
+.gradle/
+gradle/
+gradlew.bat
+settings.gradle
+build/
+*.class
+src/*.class

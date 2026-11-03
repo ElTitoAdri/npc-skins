@@ -1,0 +1,16 @@
+[
+{
+  "modid": "npcskins",
+  "name": "NPC Skins Sync",
+  "description": "Sincronizador y buscador de skins en tiempo real para Custom NPCs conectado a GitHub (ElTitoAdri/npc-skins).",
+  "version": "1.0",
+  "mcversion": "1.7.10",
+  "url": "https://github.com/ElTitoAdri/npc-skins",
+  "updateUrl": "",
+  "authorList": ["ElTitoAdri"],
+  "credits": "Creado para sincronizacion en tiempo real con Custom NPCs",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": []
+}
+]
