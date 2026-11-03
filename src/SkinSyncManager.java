@@ -167,6 +167,10 @@ public class SkinSyncManager {
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestProperty("User-Agent", "NPCSkinsMod-Minecraft-1.7.10");
                     conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
+                    String token = getAuthToken();
+                    if (token != null && !token.isEmpty()) {
+                        conn.setRequestProperty("Authorization", "Bearer " + token);
+                    }
                     conn.setConnectTimeout(8000);
                     conn.setReadTimeout(12000);
 
