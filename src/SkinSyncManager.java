@@ -1,7 +1,9 @@
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.imageio.ImageIO;
 
 public class SkinSyncManager {
     public static final String GITHUB_OWNER = "ElTitoAdri";
@@ -11,6 +13,8 @@ public class SkinSyncManager {
     private static final List<String> availableSkins = new CopyOnWriteArrayList<String>();
     private static volatile boolean isSyncing = false;
     private static volatile String lastStatus = "Listo";
+    private static volatile String globalStatus = "";
+    private static volatile long globalStatusUntil = 0;
 
     public static File getMinecraftDir() {
         try {
@@ -40,6 +44,33 @@ public class SkinSyncManager {
         return dir;
     }
 
+    public static String getAuthToken() {
+        try {
+            File tokenFile = new File(getMinecraftDir(), "npc_skins_token.txt");
+            if (tokenFile.exists()) {
+                BufferedReader br = new BufferedReader(new FileReader(tokenFile));
+                String t = br.readLine();
+                br.close();
+                if (t != null && !t.trim().isEmpty()) {
+                    return t.trim();
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            InputStream in = SkinSyncManager.class.getResourceAsStream("/token.dat");
+            if (in != null) {
+                BufferedReader br = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+                String t = br.readLine();
+                br.close();
+                if (t != null && !t.trim().isEmpty()) {
+                    return t.trim();
+                }
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
     public static List<String> getAvailableSkins() {
         if (availableSkins.isEmpty()) {
             reloadLocalSkins();
@@ -53,6 +84,18 @@ public class SkinSyncManager {
 
     public static String getLastStatus() {
         return lastStatus;
+    }
+
+    public static String getGlobalStatus() {
+        if (System.currentTimeMillis() < globalStatusUntil) {
+            return globalStatus;
+        }
+        return "";
+    }
+
+    public static void setGlobalStatus(String text, int displayMs) {
+        globalStatus = text;
+        globalStatusUntil = System.currentTimeMillis() + displayMs;
     }
 
     public static void reloadLocalSkins() {
@@ -128,13 +171,16 @@ public class SkinSyncManager {
                         }
                         reloadLocalSkins();
                         lastStatus = "Sincronizado: " + availableSkins.size() + " skins (" + downloaded + " nuevas)";
+                        setGlobalStatus("§a" + lastStatus, 5000);
                     } else {
                         lastStatus = "GitHub error: HTTP " + code;
                         reloadLocalSkins();
+                        setGlobalStatus("§c" + lastStatus, 5000);
                     }
                 } catch (Exception e) {
                     lastStatus = "Error de conexion con GitHub";
                     reloadLocalSkins();
+                    setGlobalStatus("§c" + lastStatus, 5000);
                 } finally {
                     isSyncing = false;
                     if (onComplete != null) {
@@ -145,6 +191,175 @@ public class SkinSyncManager {
                 }
             }
         }, "NPCSkins-Sync-Thread").start();
+    }
+
+    public static String validateSkinFile(File file) {
+        if (!file.exists() || !file.isFile()) {
+            return "El archivo seleccionado no existe.";
+        }
+        if (!file.getName().toLowerCase().endsWith(".png")) {
+            return "Formato incorrecto: debe ser una imagen .png";
+        }
+        if (file.length() > 300 * 1024) {
+            return "Archivo demasiado grande (máximo 300 KB).";
+        }
+        if (file.length() < 100) {
+            return "El archivo está vacío o dañado.";
+        }
+        try {
+            BufferedImage img = ImageIO.read(file);
+            if (img == null) {
+                return "No se pudo leer la imagen (archivo PNG inválido).";
+            }
+            int w = img.getWidth();
+            int h = img.getHeight();
+
+            // Valid Minecraft Skin formats:
+            // 64x32 (Classic 1.7)
+            // 64x64 (Modern standard)
+            // 128x128 (HD skins)
+            boolean isValidDimension = (w == 64 && (h == 32 || h == 64)) || (w == 128 && h == 128);
+            if (!isValidDimension) {
+                return "Dimensiones inválidas (" + w + "x" + h + " px). Una skin debe medir 64x64 o 64x32 píxeles.";
+            }
+        } catch (Exception e) {
+            return "Error al verificar la imagen: " + e.getMessage();
+        }
+        return null; // Valid!
+    }
+
+    public static void uploadSkinAsync(final File file, final Runnable onDone) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String error = validateSkinFile(file);
+                    if (error != null) {
+                        setGlobalStatus("§c" + error, 7000);
+                        return;
+                    }
+
+                    String token = getAuthToken();
+                    if (token == null || token.isEmpty()) {
+                        setGlobalStatus("§cError: No se encontró el token de GitHub para subir.", 6000);
+                        return;
+                    }
+
+                    String rawName = file.getName();
+                    if (rawName.toLowerCase().endsWith(".png")) {
+                        rawName = rawName.substring(0, rawName.length() - 4);
+                    }
+                    String cleanName = rawName.trim().toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+                    if (cleanName.isEmpty()) {
+                        cleanName = "skin_" + (System.currentTimeMillis() % 100000);
+                    }
+                    String finalFileName = cleanName + ".png";
+
+                    setGlobalStatus("§eSubiendo '" + cleanName + "' a GitHub...", 10000);
+
+                    // Read file bytes
+                    byte[] bytes = new byte[(int) file.length()];
+                    FileInputStream fis = new FileInputStream(file);
+                    int totalRead = 0;
+                    while (totalRead < bytes.length) {
+                        int r = fis.read(bytes, totalRead, bytes.length - totalRead);
+                        if (r == -1) break;
+                        totalRead += r;
+                    }
+                    fis.close();
+
+                    String base64Content = Base64.getEncoder().encodeToString(bytes);
+
+                    // Check if file already exists in GitHub to retrieve SHA
+                    String sha = getFileSha(finalFileName);
+
+                    String jsonPayload;
+                    if (sha != null && !sha.isEmpty()) {
+                        jsonPayload = "{\"message\":\"Actualizar skin " + cleanName + "\",\"content\":\"" + base64Content + "\",\"sha\":\"" + sha + "\"}";
+                    } else {
+                        jsonPayload = "{\"message\":\"Subir skin " + cleanName + "\",\"content\":\"" + base64Content + "\"}";
+                    }
+
+                    URL url = new URL(API_URL + "/" + finalFileName);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("PUT");
+                    conn.setRequestProperty("Authorization", "Bearer " + token);
+                    conn.setRequestProperty("User-Agent", "NPCSkinsMod-Minecraft-1.7.10");
+                    conn.setRequestProperty("Accept", "application/vnd.github+json");
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setDoOutput(true);
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(15000);
+
+                    OutputStream os = conn.getOutputStream();
+                    os.write(jsonPayload.getBytes("UTF-8"));
+                    os.flush();
+                    os.close();
+
+                    int code = conn.getResponseCode();
+                    if (code == 200 || code == 201) {
+                        // Save locally
+                        File local1 = new File(getCustomNpcsDir(), finalFileName);
+                        File local2 = new File(getSkinsDir(), finalFileName);
+                        copyFile(file, local1);
+                        copyFile(file, local2);
+                        reloadLocalSkins();
+                        setGlobalStatus("§a¡Skin '" + cleanName + "' subida con éxito a GitHub!", 6000);
+                    } else {
+                        setGlobalStatus("§cError al subir a GitHub (HTTP " + code + ")", 5000);
+                    }
+                } catch (Exception e) {
+                    setGlobalStatus("§cError: " + e.getMessage(), 6000);
+                } finally {
+                    if (onDone != null) {
+                        try { onDone.run(); } catch (Exception ignored) {}
+                    }
+                }
+            }
+        }, "NPCSkins-Upload-Thread").start();
+    }
+
+    private static String getFileSha(String fileName) {
+        try {
+            String token = getAuthToken();
+            URL url = new URL(API_URL + "/" + fileName);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            if (token != null && !token.isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + token);
+            }
+            conn.setRequestProperty("User-Agent", "NPCSkinsMod-Minecraft-1.7.10");
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            if (conn.getResponseCode() == 200) {
+                BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                br.close();
+                int idx = sb.indexOf("\"sha\":\"");
+                if (idx != -1) {
+                    idx += 7;
+                    int end = sb.indexOf("\"", idx);
+                    if (end != -1) return sb.substring(idx, end);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static void copyFile(File src, File dest) {
+        try {
+            FileInputStream in = new FileInputStream(src);
+            FileOutputStream out = new FileOutputStream(dest);
+            byte[] buf = new byte[4096];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+            }
+            in.close();
+            out.close();
+        } catch (Exception ignored) {}
     }
 
     private static void downloadFile(String fileUrl, File dest) {

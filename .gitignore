@@ -5,3 +5,6 @@ settings.gradle
 build/
 *.class
 src/*.class
+token.dat
+npc_skins_token.txt
+resources/token.dat
